@@ -12,7 +12,7 @@
 
 ---
 
-> **▶ Web renderer:** the same core drives a browser front-end (WASM + Vue) as a selectable renderer — see [`web/`](https://github.com/wickra-lib/wickra-terminal/tree/main/web).
+> **▶ Web renderer:** the same core drives a browser front-end (WASM + Vue) as a second renderer — see [`web/`](https://github.com/wickra-lib/wickra-terminal/tree/main/web).
 
 **The data-driven trading-terminal core for Go, over the Wickra C ABI hub via cgo.**
 
@@ -28,8 +28,9 @@ binding.
 ## Install
 
 Use the published **`wickra-terminal-go`** module, which bundles the prebuilt C
-ABI library for every platform, so `go get` + `go build` works with no extra
-steps (a C compiler is still required, as the binding uses cgo):
+ABI library for every platform, so `go get` + `go build` needs nothing else (a C
+compiler is still required, as the binding uses cgo). Running what you build
+needs one more step on Windows, below:
 
 ```bash
 go get github.com/wickra-lib/wickra-terminal-go
@@ -41,8 +42,28 @@ import wickra "github.com/wickra-lib/wickra-terminal-go"
 
 `wickra-terminal-go` is generated from this directory by the release pipeline: it
 mirrors the Go sources, the vendored C ABI header (`include/wickra_terminal.h`)
-and the prebuilt libraries under `lib/<goos>_<goarch>/`. On Windows the DLL must
-be discoverable at run time (next to the executable or on `PATH`).
+and the prebuilt libraries under `lib/<goos>_<goarch>/`.
+
+### Windows needs one more step
+
+Building works everywhere; **running** does not. The cgo directives carry
+`-Wl,-rpath` on Linux and macOS, so the bundled library is found next to the
+module at run time. Windows has no PE equivalent: the loader searches the
+executable's directory and `PATH`, and the DLL is in neither.
+
+A binary built against the module therefore starts and immediately exits with
+`exit status 0xc0000135` — `STATUS_DLL_NOT_FOUND`, with no message naming the
+library. Point Windows at the bundled directory, or copy the DLL next to your
+executable:
+
+```powershell
+$dir = go list -m -f '{{.Dir}}' github.com/wickra-lib/wickra-terminal-go
+$env:PATH = "$dir\lib\windows_amd64;$env:PATH"
+```
+
+CI cannot catch this: `ci.yml` puts the library directory on `PATH` before
+running the Go tests, which is exactly the step a `go get` consumer has no reason
+to take.
 
 ## Quick start
 
@@ -72,16 +93,17 @@ func main() {
 }
 ```
 
-The same command protocol works from every binding and both renderers — `Tick`,
-`Subscribe`, `Unsubscribe`, `SetFocus`, `AddSource`, `RemoveSource`, `Seek` (the
-time-machine) and `Feed` (a host-fed source). See the
-[docs](https://github.com/wickra-lib/wickra-terminal/tree/main/docs).
+## Building from source (contributors)
 
-## Building from this repository (contributors)
+This section applies to the [wickra-terminal] source repository, not to the
+published module: the released module vendors the libraries and needs none of
+this. It is here because the same file is the module's page on pkg.go.dev, and a
+reader who arrived there should not be sent looking for directories the module
+does not contain.
 
-This `bindings/go` directory is the development source. To build it directly,
-compile the C ABI hub and stage the library into the per-platform directory cgo
-links against:
+In a `wickra-terminal` checkout, compile the C ABI hub and stage the library into
+the per-platform directory cgo links against — paths are from the repository
+root:
 
 ```bash
 cargo build -p wickra-terminal-c --release
@@ -91,10 +113,65 @@ cp target/release/libwickra_terminal.dylib bindings/go/lib/darwin_arm64/   # mac
 cp target/release/wickra_terminal.dll      bindings/go/lib/windows_amd64/  # Windows
 ```
 
-Then, with the library on the loader path, run `go test ./...` from this
-directory.
+Then, with the library on the loader path, run `go test ./...` from
+`bindings/go`.
+
+[wickra-terminal]: https://github.com/wickra-lib/wickra-terminal
+
+## The command protocol
+
+Every binding drives the same twelve commands, and the frame that comes back is
+the same JSON in all of them:
+
+| Command | Effect |
+|---------|--------|
+| `Tick` | Poll every source, fold what arrived, return the frame |
+| `Subscribe` / `Unsubscribe` | Add or drop a market on one source |
+| `SetFocus` | Choose the market the panels render |
+| `AddSource` / `RemoveSource` | Attach or detach a feed at run time |
+| `Seek` | Rewind or fast-forward a replay source (the time machine) |
+| `Feed` | Hand an event to a `Manual` source from the host |
+| `AddIndicator` / `RemoveIndicator` | Track or drop an indicator on every market |
+| `SetTimeframe` | Set the bar size the candle-input indicators are fed at |
+| `ListIndicators` | The catalogue: every registry name with its default parameters |
+
+`ListIndicators` is the one command that answers rather than renders, and each
+row carries `needs_reference`, which marks the pairwise indicators that compare
+two markets and so require a `reference` symbol in their spec. A row for one of
+the two friendly aliases also carries `alias_of` naming the canonical kind it
+builds, so `Macd` and `MacdIndicator` read as one indicator rather than two.
+
+A frame is `{"panels": [...]}`, one entry per configured panel, each tagged with
+its `panel` kind — `chart`, `book`, `tape`, `watchlist`, `footprint`. See
+[`docs/`](https://github.com/wickra-lib/wickra-terminal/tree/main/docs) for the panel and source references.
+
+## Cross-language equality
+
+The same config and the same command sequence produce a byte-identical frame in
+Rust, Python, Node.js, WASM, C, C++, C#, Go, Java and R. That is not an aspiration:
+[`golden/`](https://github.com/wickra-lib/wickra-terminal/tree/main/golden) holds a recorded feed and the expected frame,
+and every binding's test suite asserts its own output against that one file.
+
+## Documentation
+
+- **Repository:** <https://github.com/wickra-lib/wickra-terminal>
+- **Panels, sources, renderers, streaming:** [`docs/`](https://github.com/wickra-lib/wickra-terminal/tree/main/docs)
+- **Cookbook:** [`docs/Cookbook.md`](https://github.com/wickra-lib/wickra-terminal/blob/main/docs/Cookbook.md)
+- **Built on Wickra:** <https://github.com/wickra-lib/wickra> · <https://docs.wickra.org>
+
+## Security
+
+Found a security issue? **Please don't open a public issue.** Report it privately
+via the repository's *Security* tab (*"Report a vulnerability"*) or email
+**support@wickra.org**. Full policy: <https://github.com/wickra-lib/wickra-terminal/blob/main/SECURITY.md>.
+
+## Disclaimer
+
+Not a trading system, and not financial advice. The terminal renders market data
+and derived view-models; what you do with them is your own risk. Provided **as
+is**, without warranty of any kind.
 
 ## License
 
-Dual-licensed under [MIT](https://github.com/wickra-lib/wickra-terminal/blob/main/LICENSE-MIT)
-or [Apache-2.0](https://github.com/wickra-lib/wickra-terminal/blob/main/LICENSE-APACHE), at your option.
+Dual-licensed under [MIT](https://github.com/wickra-lib/wickra-terminal/blob/main/LICENSE-MIT) or
+[Apache-2.0](https://github.com/wickra-lib/wickra-terminal/blob/main/LICENSE-APACHE), at your option.
